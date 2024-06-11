@@ -1,0 +1,933 @@
+﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" >
+<head>
+    <title>Untitled Page</title>
+</head>
+<body>
+<ul class="download"><li><a href="Anagrams2.zip">Download Anagrams2.zip - 1.1 MB</a></li></ul>
+
+<h1>Introduction</h1>
+
+<p>Back in April 2008, I posted my first .Net article here on CodeProject:</p>
+
+<p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<a href="http://www.codeproject.com/Articles/25013/Anagrams-A-Word-Game-in-C">Anagrams - A Word Game in C#</a>[<a href="http://www.codeproject.com/Articles/25013/Anagrams-A-Word-Game-in-C" target="_blank" title="New Window">^</a>]</p>
+
+<p>It's a simple word game that allowed the user to find anagrams within a scrambled word, awarding Scrabble-based points and extra time based on the word found. I reveled in my cleverocity (I know - that's not really a word, which is ironic when you consider the nature of the code this article describes), and congratulated myself for a job well-done. Since my current job requires coding within WPF, I got the urge to revisit Anagrams, and give it a much-needed facelift.</p>
+    
+<p>I must admit that while I tried to use certain patterns and WPF practices, I certainly didn't make heroic efforts to stay rigidly within their implied guidelines. Everything in programming is a trade-off, and rigid application of those kinds of rules has absolutely no place in software development. Given the nature of and size of this application, that idea is even more applicable.</p>
+
+<h1>Featured Technologies</h1>
+
+<p>The following technologies and code elements are present in this application:</p>
+
+<ul>
+    <li>Visual Studio 12</li>
+    <li>WPF</li>
+    <li>MVVM pattern</li>
+    <li>Dispatch Timers</li>
+    <li>Data Binding</li>
+    <li>Value Converters</li>
+    <li>Linq</li>
+    <li>Bacon</li>
+</ul>
+
+<strong><em>IMPORTANT NOTICE!</em></strong> *I THINK* you have to install .Net 4.5 before running this application, or change the set method on the <code>GameDictionary.PercentRemaining</code> property to <code>public</code> by removing the <code>private</code> accessor).
+
+<h1>General Architecture</h1>
+
+<p>This version of the game contains a lot less code than the original. I'm not sure if that's due mostly to a combination of my increased knowledge of .Net (combined with its latest features), or due to the use MVVM/WPF. Whatever the cause, it's a good thing.</p>
+
+<p>Words are loaded from a text file on disk (in the old version there was a text file for each word size), and each time user starts a game, a list of words is created for use by the interface. This list of words contains ALL of the words that can be found within the currently selected game word. This pattern is probably the biggest reason there is less code in the application. In the old version, all words were available to the game all the time, and I had to maintain several indicators, indexes, and other crap because I (falsely) assumed that .Net's performance was lacking, and I &quot;coded around&quot; that falsely perceived problem.</p>
+
+<h1>The Model</h1>
+
+<p>The model is driven by a single comma-delimited text file that contains all of the words that can be used in the game (currently, the word count is over 125,000). When the program runs, the data file is loaded, and points are calculated for each word.  A word is represented by the <code>AWord</code> 
+class:</p>
+
+<pre lang="cs">public class AWord
+{
+    public string Text   { get; private set; }
+    public int    Points { get; private set; }
+	public bool   Used   { get; protected set; }
+
+    public AWord(string text)
+    {
+        this.Text   = text;
+        this.Used = false;
+        this.Points = Globals.CalcWordScore(this.Text);
+    }
+
+    public AWord(AWord word)
+    {
+        this.Text   = word.Text;
+        this.Used   = word.Used;
+        this.Points = word.Points;
+    }
+}
+</pre>
+
+<p>In order to have a lower impact on memory and increase the performance, I included the <code>Points</code> and <code>Used</code> properties in the model. The primary reason is that the words used in a given game are extracted from the model only when they're needed by the current game. I didn't want to have to recalculate word points for every game (although there are rarely any instances where you'd get more than 300-400 possible words in a given scramble). The <code>Used</code> property is required to keep track of words used as game words in the current app session, and the only way to maintain tracking is to put this property into the model. What this should tell you is that MVVM is only a guideline, and not a rigid set of requirements. Sometimes, you gotta bend the rules to make the code and data workable within the context of the application in which it is used.</p>
+
+<p>And the list of words is represented by the MainDictionaryClass:</p>
+
+<pre lang="cs">//////////////////////////////////////////////////////////////////////////////////////
+public class MainDictionary : List&lt;AWord&gt;
+{
+    public bool CanPlay          { get; set;         }
+    public int  ShortestWordSize { get; private set; }
+    public int  LongestWordSize  { get; private set; }
+
+    //---------------------------------------------------------------------------------
+    public MainDictionary()
+    {
+        this.ShortestWordSize = 65535;
+        this.LongestWordSize  = 0;
+        this.CanPlay          = LoadFile(Path.Combine
+                                         (Path.GetDirectoryName
+                                          (System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName), 
+                                         &quot;Anagrams2Words.txt&quot;));
+    }
+
+    //---------------------------------------------------------------------------------
+    protected bool LoadFile(string fileName)
+    {
+        bool success = false;
+        try
+        {
+            using (FileStream stream = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                using (StreamReader reader = new StreamReader(stream))
+                {
+                    string words;
+                    while (!reader.EndOfStream)
+                    {
+                        words = reader.ReadLine();
+                        if (words.Length &gt; 0)
+                        {
+                            string[] wordsplit = words.Split(' ');
+                            for (int i = 0; i &lt; wordsplit.Length; i++)
+                            {
+                                string text      = wordsplit[i].ToUpper();
+                                ShortestWordSize = Math.Min(ShortestWordSize, text.Length);
+                                LongestWordSize  = Math.Max(LongestWordSize, text.Length);
+                                AWord item       = new AWord(text);
+                                Add(item);
+                            }
+                        }
+                    }
+                    Globals.LongestWord  = LongestWordSize;
+                    Globals.ShortestWord = ShortestWordSize;
+                    success              = this.Count &gt; 0;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            if (e != null) { }
+        }
+        return success;
+    }
+
+    //---------------------------------------------------------------------------------
+    public List&lt;AWord&gt; GetWordsByLength(int length)
+    {
+        var list = (from item in this 
+                    where item.Text.Length == length
+                    select item).ToList&lt;AWord&gt;();
+        return list;
+    }
+}
+</pre>
+
+<p>As you can see, there's really not much going on here. The user can't change the list of words from within the program, so there's no reason to be able to save them back to the hard drive. Other than loading the words and calculating their point values, what else is there to do/say?</p>
+
+<h1>The View Model</h1>
+
+<p>The view model is where most of the work is done during game play. To keep the article size to a reasonable minimum, I didn't include comments that actually exist in the code. Generally speaking, I uses the standard WPF objects to allow the interface to reflect changes in the view model, namely, <code>INotifyPropertyChanged</code> and <code>ObservableCollection</code>. Given the amount of documentation available on the internet for these objects, and the fact that I'm not doing anything beyond normal usage, this is the only thing I'm going to say about these objects.</p>
+
+<h2>The DisplayWord Class</h2>
+
+<p>This class represents a word in the current game, and is created for each word used in the current game. It is derived from <code>AWord</code>. The properties are as follows:</p>
+
+<ul>
+    <li>string <strong>Foreground</strong> - This is the foreground color to be used when displaying the word in the <code>ListBox</code> on the main window.</li>
+    <li>string <strong>Scramble</strong> - This is the scrambled version of the word. This string will be empty unless this is the current game word.</li>
+    <li>bool <strong>Found</strong> - This property indicates whether or not the user has found this word during game play. When this property is true, the color of the word changes to either blue (a normal found word), or red (if this word is the original word).</li>
+    <li>bool <strong>IsOriginalWord</strong> - This property indicates that this word is the current game word.</li>
+</ul>
+
+<p>The only code of any real interest in this class is the <code>ScrambleIt</code> method. It's responsible (as you might guess) for scrambling the word.</p>
+
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+public void ScrambleIt()
+{
+    StringBuilder scramble = new StringBuilder();
+    do 
+    {
+        string temp = this.Text;
+        do 
+        {
+            if (temp.Length &gt; 1)
+            {
+                int index = (temp.Length &gt; 1) ? Globals.RandomNumber(0, temp.Length-1) : 0;
+                scramble.Append(temp[index]);
+                temp = temp.Remove(index, 1);
+            }
+            else
+            {
+                scramble.Append(temp);
+                temp = &quot;&quot;;
+            }
+        } while (!string.IsNullOrEmpty(temp));
+    } while (scramble.ToString() == this.Text);
+    this.Scramble       = scramble.ToString();
+    this.IsOriginalWord = true;
+}
+</pre>
+
+<p>Since there's a remote possibility that the resulting scrambled word could end up being the original word, the word is re-scrambled until it is not the same as the original word.</p>
+
+<h2>The GameStatistics Class</h2>
+
+<p>This class maintains statistics relevant to the current game-in-progress, such as how many words of a certain length have been found, how many points have been earned and similar data. there's a little math happening here, but nothing worth further note. I was tempted to include my current warp anti-gravity calculations here, but I didn't want to confuse anyone, or upset those who think it's not possible).</p>
+
+<h2>The Settings Class</h2>
+
+<p>This class represents the settings that the user can change in the Setup window, and is a view model on those properties. It contains nothing but set/get and a <code>Save</code> method. Nothing fancy, and certainly not worth discussing any further.</p>
+
+<h2>The WordCounts Class</h2>
+
+<p>This class represents a list of <code>WordCounItem</code> objects, and is used within (and exposed from) the <code>GameStatistics</code> class. A <code>WordCountItem</code> contains two properties:</p>
+
+<ul>
+    <li><strong>LetterCount</strong> - The size of the words being tracked by this item</li>
+    <li><strong>WordCount</strong> - How many words of this size have been found in the current game</li>
+</ul>
+
+<h2>The GameDictionary Class</h2>
+
+<p>This class manages game play and is created for each game, which relieves us of having to reset properties in words and the statistics between games. To start things off, we need to determine how many letters the game word will have. This is determined by the game settings, and the default is that a random number of letters will be used</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+private int SetLetterCount()
+{
+	int letterCount = 0;
+	int shortest = Math.Max(Globals.MainDictionary.ShortestWordSize, 6);
+	int longest  = Globals.MainDictionary.LongestWordSize;
+	switch (this.Settings.LetterPoolMode)
+	{
+		case LetterPoolMode.Random : 
+			letterCount = Globals.RandomNumber(shortest, longest);
+			break;
+
+		case LetterPoolMode.Static :
+			letterCount = Settings.LetterPoolCount;
+			break;
+	}
+	return letterCount;
+}
+</pre>
+
+<p>Now that we have a word size, we can choose a word at random from our main dictionary.</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+private AWord SelectNewWord(int count)
+{
+    AWord selectedWord = null;
+    List&lt;AWord&gt; words = Globals.MainDictionary.GetWordsByLength(count);
+    if (this.Settings.TrackUsedWords)
+    {
+        if (words.Count == 0)
+        {
+            words.Clear();
+            if (this.Settings.LetterPoolMode == LetterPoolMode.Random)
+            {
+                count = SetLetterCount();
+                selectedWord = SelectNewWord(count);
+            }
+            else
+            {
+                words = Globals.MainDictionary.GetWordsByLength(count);
+                selectedWord = words.ElementAt(Globals.RandomNumber(0, words.Count-1));
+            }
+        }
+        else // otherwise we have words to pick from that haven't yet been used
+        {
+            selectedWord = words.ElementAt(Globals.RandomNumber(0, words.Count-1));
+        }
+    }
+    else // we're not tracking used words, so just pick one
+    {
+        selectedWord = words.ElementAt(Globals.RandomNumber(0, words.Count-1));
+    }
+    if (selectedWord != null)
+    {
+        selectedWord.Used = true;
+    }
+    return selectedWord;
+}
+</pre>
+
+<p>Next, we need to find all words that can be derived from the game word.</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+public void FindPossibleWords(AWord selectedWord)
+{
+    this.Clear();
+    if (selectedWord != null)
+    {
+        var possibleWords = (from item in Globals.MainDictionary
+                             where Globals.Contains(selectedWord.Text, item.Text)
+                             select item).ToList&lt;AWord&gt;();
+        foreach(AWord word in possibleWords)
+        {
+            DisplayWord displayWord = new DisplayWord(word, (word.Text == selectedWord.Text));
+            if (displayWord.IsOriginalWord)
+            {
+                this.GameWord = displayWord;
+            }
+            this.Add(displayWord);
+            Debug.WriteLine(&quot;{0} words&quot;, this.Count);
+        }
+    }
+}
+</pre>
+
+<p>Finally, we start the game.</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+public void ResetGame()
+{
+    this.WordCount = this.Count;
+    this.Statistics.Reset();
+    InitTimer();
+    StartTimer();
+    this.IsPlaying = true;
+}
+</pre>
+
+<p>Once game play has started, this object handles the housekeeping when a word is submitted, or when the game is stopped.  When a word is submitted, validity must be established, and points awarded (or deducted).</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+public bool ValidAndScoreWord(string text)
+{
+    text       = text.ToUpper();
+    int points = 0;
+    bool valid = (!string.IsNullOrEmpty(text));
+    DisplayWord foundWord = null;
+    if (valid)
+    {
+        foundWord = (from item in this 
+        where (item.Text == text &amp;&amp; !item.Found) 
+        select item).FirstOrDefault();
+        valid = (foundWord != null);
+    }
+    if (valid)
+    {
+        foundWord.Found = true;
+        foundWord.SetFoundColor();
+        points += foundWord.Points;
+        // the player can bonus points if he specifies the original word
+        if (foundWord.IsOriginalWord)
+        {
+            // bonus points
+            points += ORIGINAL_WORD_BONUS;
+        }
+        // OR he can get bonus points for specifying a word using all of the 
+        // letters that isn't the original word.
+        else
+        {
+            if (foundWord.Text.Length == GameWord.Text.Length)
+            {
+                // bonus points
+                points += ALL_LETTERS_BONUS;
+            }
+        }
+        this.Statistics.Update(foundWord.Text.Length, points);
+        // determine bonus time
+        if (Settings.TimerMode != TimerMode.NoTimer)
+        {
+            int wordRemainder;
+            Math.DivRem(this.Statistics.WordCount.WordsFound, this.Settings.BonusWords, out wordRemainder);
+            if (wordRemainder == 0)
+            {
+                this.SecondsRemaining += this.Settings.BonusTime;
+            }
+            if (foundWord.IsOriginalWord)
+            {
+                this.SecondsRemaining += 60;
+            }
+            else 
+            {
+                if (foundWord.Text.Length == GameWord.Text.Length)
+                {
+                    // bonus points
+                    this.SecondsRemaining += 30;
+                }
+            }
+            this.SecondsAtStart = this.SecondsRemaining;
+        }
+    }
+    else
+    {
+        // deduct a point because the word was invalid (or already used)
+        points--;
+        this.Statistics.Update(0, points);
+    }
+    if (this.IsWinner)
+    {
+        StopTimer();
+    }
+    return (foundWord != null);
+}
+</pre>
+
+<p>If the timer is used (configurable in the Setup form), the following method handles the ticks:</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+public void StartTimer()
+{
+    if (this.Settings.TimerMode != TimerMode.NoTimer)
+    {
+        m_timer.Tick += new EventHandler 
+        (
+            delegate(object s, EventArgs a) 
+            { 
+                this.SecondsRemaining--;
+                this.PercentRemaining = ((double)this.SecondsRemaining / 
+                                          Math.Max((double)this.SecondsAtStart, 1)) * 100d;
+                if (Settings.PlayTickSound)
+                {
+                    m_soundPlayer.Play();
+                }
+                if (this.SecondsRemaining == 0)
+                {
+                    StopTimer();
+                }
+            }
+        );
+        m_timer.Start();
+    }
+    this.IsPlaying = true;
+}
+</pre>
+
+<p>All other methods are for starting, stopping, and solving the game</p>
+
+<h1>The Views</h1>
+
+<p>As with most WPF apps, the most interesting stuff (which also happens to be the stuff that's the biggest pain in the ass for people like me that haven't drank the WPF kool-aid) happens in the XAML. The code-behind is minimal (as it probably should be), with the main window having just a little under 120 lines of code in it (excluding comments).</p>
+
+<h2>The Main Window</h2>
+
+<img src="NewStart.png" />
+
+<p>This is where the game is actually played. There were several relatively challenging aspects of this form.</p>
+
+<h3>The ProgressBar</h3>
+
+<p>The <code>ProgressBar</code> is used to show time remaining in the form of both a text display of minutes/seconds remaining, and a graphic representation of the percentage of time remaining. Since the <code>ProgressBar</code> already showed the graphical stuff, my task was to add the text display, which is illustrated below:</p>
+
+<pre>    &lt;Border BorderBrush=&quot;{TemplateBinding BorderBrush}&quot; 
+            BorderThickness=&quot;{TemplateBinding BorderThickness}&quot; CornerRadius=&quot;2&quot;&gt;
+        &lt;Label x:Name=&quot;PART_TextDisplay&quot; 
+               Content=&quot;{Binding Path=SecondsRemaining, Converter={StaticResource SecondsRemaining}}&quot; 
+               FontWeight=&quot;Bold&quot; HorizontalAlignment=&quot;Center&quot; VerticalAlignment=&quot;Center&quot; /&gt;
+    &lt;/Border&gt;
+</pre>
+
+<p>In order to display the time remaining, I created the <code>TimeRemainingConverter</code> converter. The <code>ProgressBar.Value</code> property is bound to the <code>GameDictionary.SecondsRemaining</code> property.</p>
+
+<h3>The Game Word</h3>
+
+<p>The game word is comprised of two controls overlaying each other. If a game is underway, the game word is displayed. Otherwise, the Game Over control is displayed. I did this to give a more visually alarming indication that the game had expired (for whatever reason.</p>
+
+<pre>    &lt;TextBox Grid.Row=&quot;1&quot; Grid.Column=&quot;1&quot; Margin=&quot;0,0,0,5&quot; x:Name=&quot;textboxGameWord&quot; 
+             CharacterCasing=&quot;Upper&quot; Text=&quot;&quot; IsReadOnly=&quot;true&quot; Focusable=&quot;False&quot; 
+             removed=&quot;Silver&quot; FontWeight=&quot;Bold&quot; BorderBrush=&quot;Black&quot; /&gt;
+    &lt;Border Grid.Row=&quot;1&quot; Grid.Column=&quot;1&quot; Focusable=&quot;False&quot; removed=&quot;Red&quot; BorderBrush=&quot;Black&quot; 
+            BorderThickness=&quot;1&quot; Margin=&quot;0,0,0,5&quot; 
+            Visibility=&quot;{Binding Path=IsPlaying, Converter={StaticResource isPlayingConverter}}&quot; &gt;
+        &lt;TextBlock Focusable=&quot;False&quot; removed=&quot;Red&quot; Foreground=&quot;Yellow&quot; FontWeight=&quot;Bold&quot; 
+                   FontStyle=&quot;Italic&quot; Text=&quot;GAME OVER!!&quot; VerticalAlignment=&quot;Center&quot; 
+                   HorizontalAlignment=&quot;Center&quot;/&gt;
+    &lt;/Border&gt;
+</pre>
+
+<p>The most interesting part of that is the use of the <code>IsPlayingVisibilityConverter</code>.</p>
+
+<h3>The User Word</h3>
+
+<p>The user word control actually helps the filter mechanism work. As the user types, the list of possible words that have been found are chcked to see if the word starts with the text that's been typed so far. This is done to help the user to avoid submitting duplicate words (which, if done, causes a one point deduction for the game. The code for this is handled in code-behind via the <code>TextChanged</code> event which then causes the view model to set the <code>SatisfiesFilter</code> property.  This is one of those places that a more WPF-sih approach is available by way of the <code>ICollectionView</code>, but that I chose to approach in a more contextual way (within the implementation already performed in the <code>GameDictionary</code> view model object).</p>
+
+<h3>The ListBox</h3>
+
+<p>I needed the <code>ListBox</code> to be able to show items in a custom fashion, namely certain items were to be certain colors, and those items would only be shown if the user found them (or when the user clicked the Solve button.  So, I simply replaced the <code>ContentPresenter</code> in the <code>ListBoxItem</code> style with 
+the following:</p>
+
+<pre>&lt;Grid &gt;
+    &lt;StackPanel HorizontalAlignment=&quot;Left&quot; Orientation=&quot;Horizontal&quot; Margin=&quot;5,0,0,0&quot;&gt;
+        &lt;TextBlock x:Name=&quot;PART_Word&quot; Text=&quot;{Binding Path=Text}&quot; FontStyle=&quot;Italic&quot; /&gt;
+        &lt;TextBlock x:Name=&quot;PART_Adorner&quot; Text=&quot;**&quot; FontStyle=&quot;Italic&quot; 
+                   Visibility=&quot;{Binding Path=IsOriginalWord, Converter={StaticResource BoolToVisibility}}&quot; /&gt;
+    &lt;/StackPanel&gt;
+    &lt;StackPanel HorizontalAlignment=&quot;Right&quot; Orientation=&quot;Horizontal&quot; Margin=&quot;0,0,5,0&quot;&gt;
+        &lt;TextBlock x:Name=&quot;PART_Points&quot; Text=&quot;{Binding Path=Points}&quot; FontStyle=&quot;Italic&quot; /&gt;
+    &lt;/StackPanel&gt;
+&lt;/Grid&gt;
+</pre>
+
+<p>In general the item is displayed in italic, but word would be adorned with a doubleasterisk (&quot;**&quot;) if it represented toe original game word. I also added the word points to the item.</p>
+
+<p>Next, a given items would only be visible if the word was &quot;found&quot;. I used the built-in WPF converter for this</p>
+
+<pre lang="xaml">    &lt;Setter Property=&quot;Visibility&quot; Value=&quot;{Binding Path=Found, Converter={StaticResource BoolToVisibility}}&quot; /&gt;
+</pre>
+
+<p>Finally, the item's foreground color would depend on the status of the word. If the word is not found, it would be gray (after the puzzle was solved), blue if it was found, or red if it was found and was also the original game word.</p>
+
+<pre lang="xaml">    &lt;Setter Property=&quot;Foreground&quot; Value=&quot;{Binding Path=Foreground}&quot; /&gt;
+</pre>
+
+<h3>The End-of-Game Statisics GroupBox</h3>
+
+<p>Most of you should be aware of this by now, but the standard WPF <code>GroupBox</code> control is (IMHO) designed incorrectly. The border of the groupbox, when placed over a container whose background is not transparent, displays a non-transparent inner and outer border. Since I'm using a Light Steel Blue background, it was painfully evident. This is what it looked like:</p>
+
+<center><img src="BadGroupBox.png" /></center>
+
+<p>In order to correct it, I had to edit the standard template to change these borders to transparent.</p>
+
+<pre>&lt;Border BorderBrush=&quot;Transparent&quot; BorderThickness=&quot;{TemplateBinding BorderThickness}&quot; 
+        removed=&quot;{TemplateBinding Background}&quot; Grid.ColumnSpan=&quot;4&quot; Grid.Column=&quot;0&quot; 
+        CornerRadius=&quot;4&quot; Grid.Row=&quot;1&quot; Grid.RowSpan=&quot;3&quot;/&gt;
+    &lt;Border x:Name=&quot;Header&quot; Grid.Column=&quot;1&quot; Padding=&quot;3,1,3,0&quot; Grid.Row=&quot;0&quot; Grid.RowSpan=&quot;2&quot;&gt;
+        &lt;ContentPresenter ContentSource=&quot;Header&quot; RecognizesAccessKey=&quot;True&quot; 
+                          SnapsToDevicePixels=&quot;{TemplateBinding SnapsToDevicePixels}&quot;/&gt;
+    &lt;/Border&gt;
+    &lt;ContentPresenter Grid.ColumnSpan=&quot;2&quot; Grid.Column=&quot;1&quot; Margin=&quot;{TemplateBinding Padding}&quot; 
+                      Grid.Row=&quot;2&quot; SnapsToDevicePixels=&quot;{TemplateBinding SnapsToDevicePixels}&quot;/&gt;
+    &lt;Border BorderBrush=&quot;Transparent&quot; 
+            BorderThickness=&quot;{TemplateBinding BorderThickness}&quot; 
+            Grid.ColumnSpan=&quot;4&quot; CornerRadius=&quot;4&quot; Grid.Row=&quot;1&quot; Grid.RowSpan=&quot;3&quot;&gt;
+        &lt;Border.OpacityMask&gt;
+            &lt;MultiBinding ConverterParameter=&quot;7&quot; 
+                          Converter=&quot;{StaticResource BorderGapMaskConverter}&quot;&gt;
+                &lt;Binding ElementName=&quot;Header&quot; Path=&quot;ActualWidth&quot;/&gt;
+                &lt;Binding Path=&quot;ActualWidth&quot; RelativeSource=&quot;{RelativeSource Self}&quot;/&gt;
+                &lt;Binding Path=&quot;ActualHeight&quot; RelativeSource=&quot;{RelativeSource Self}&quot;/&gt;
+            &lt;/MultiBinding&gt;
+        &lt;/Border.OpacityMask&gt;
+        &lt;Border BorderBrush=&quot;{TemplateBinding BorderBrush}&quot; 
+                BorderThickness=&quot;{TemplateBinding BorderThickness}&quot; CornerRadius=&quot;3&quot;&gt;
+            &lt;Border BorderBrush=&quot;Transparent&quot; 
+                    BorderThickness=&quot;{TemplateBinding BorderThickness}&quot; CornerRadius=&quot;2&quot;/&gt;
+        &lt;/Border&gt;
+    &lt;/Border&gt;
+&lt;/Border&gt;
+</pre>
+
+<p>Problem solved.</p>
+
+<h3>The Statistics Themselves</h3>
+
+<p>The count of words found of given sizes required the use of a <code>ConverterParameter</code> (and is the reason behind the existince of the <code>WordCounts</code>/<code>WordCountItem</code> classes. I needed to be able to 
+specify the size of the words to retrieve the count for, but you can only have one converter per binding. Happily, I knew the desired word size, so I was able to use the <code>ConverterParameter</code> to help the converter do &quot;the right thing&quot;.</p>
+
+<pre>&lt;TextBlock Grid.Column=&quot;1&quot; Grid.Row=&quot;2&quot;&gt;
+    &lt;TextBlock.Text&gt;
+        &lt;Binding Path=&quot;Statistics.WordCount&quot; Converter=&quot;{StaticResource StatsWordCountConverter}&quot; 
+                 ConverterParameter=&quot;3&quot; /&gt;
+    &lt;/TextBlock.Text&gt;
+&lt;/TextBlock&gt;
+&lt;TextBlock Grid.Column=&quot;1&quot; Grid.Row=&quot;3&quot; Margin=&quot;0,0,0,5&quot; &gt;
+    &lt;TextBlock.Text&gt;
+        &lt;Binding Path=&quot;Statistics.WordCount&quot; Converter=&quot;{StaticResource StatsWordCountConverter}&quot; 
+                 ConverterParameter=&quot;4&quot; /&gt;
+    &lt;/TextBlock.Text&gt;
+&lt;/TextBlock&gt;
+    ...
+    ...
+&lt;TextBlock Grid.Column=&quot;1&quot; Grid.Row=&quot;3&quot; Margin=&quot;0,0,0,5&quot; &gt;
+    &lt;TextBlock.Text&gt;
+        &lt;Binding Path=&quot;Statistics.WordCount&quot; Converter=&quot;{StaticResource StatsWordCountConverter}&quot; 
+                 ConverterParameter=&quot;10&quot; /&gt;
+    &lt;/TextBlock.Text&gt;
+&lt;/TextBlock&gt;
+</pre>
+
+<p>Doing it this way solves the immediate problem, but is not sufficient for the design of the model itself. the model is adaptive where the largest number of letters is concerned, and this design does NOT take that into consideration. The view model itself does (there is one word cound item from 3 to &quot;longest word size&quot;), so one day, I might address this appropriately.</p>
+
+<h2>The Setup Window</h2>
+
+<img src="SetupWindow.png&gt;" />
+
+<p>This view allows the user to changing settings in order to alter gameplay. The only problem I encountered here was with radio buttons due to their nature of by checking one, another is unchecked. I didn't feel like resolving the issue, so all <code>RadioButton</code> setting/getting is performed in the code behind. All of the &quot;solutions&quot; I saw on the internet were simply hacks around the issue, and I didn't feel like messing with it.</p>
+
+<h2>The Winner Window</h2>
+
+<p>In the event that the user actually wins a game (finding all words within the current game word), this window is displayed. I don't have a screen shot of this because I've never actually won a game. <img align="top" alt="Smile | &lt;img src=" /> &quot; src=&quot;http://www.codeproject.com/script/Forums/Images/smiley_smile.gif&quot; /&gt; </p>
+
+<h1>Other Aspects of the Code</h1>
+
+<h2>The Globals Object</h2>
+
+<p>This object is a convenient container for stuff that needs to be accessible duiring the entire application session.</p>
+
+<h3>The Contains Method</h3>
+
+<p>When a game is started, this method is called for all words in the main dictionary that are smaller than or equal to the size of the game word. I do this when the game starts to avoid any delays during actual game play.</p>
+
+<p>First I created a sorted list of characters for the container (the game word), and the text (the possible word). I realize that it's technically unnecessary to sort the characters, but in reality, it sames a small amount of time in the do/while loop because the loop can potentially break out a little sooner. Needless optimization? Maybe.</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+public static bool Contains(string container, string inText)
+{
+    // The idea is to simply run through the two strings and delete matching 
+    // characters as they're found.  If the inText string ends up as an empty 
+    // string, the word did in fact contain the specified text.
+    bool   contains = false;
+    List&lt;char&gt; containerList = new List&lt;char&gt;();
+    containerList.AddRange(container);
+    containerList.Sort();
+
+    List&lt;char&gt; testList = new List&lt;char&gt;();
+    testList.AddRange(inText);
+    testList.Sort();
+</pre>
+
+<p>Once I have the two lists, I can iterate through each one, testing the current character, and if found, deleting it from each list. If the test list is empty at the end of the iteration, the word is a valid possible word so we return <code>true</code>.</p>
+
+<pre lang="cs">    bool found = false;
+    do
+    {
+        found = false;
+        for (int i = 0; i &lt; containerList.Count; i++)
+        {
+            if (testList[0] == containerList[i])
+            {
+                testList.RemoveAt(0);
+                containerList.RemoveAt(i);
+                found = true;
+                break;
+            }
+        }
+    } while (found &amp;&amp; testList.Count &gt; 0);
+		
+    contains = (testList.Count == 0);
+    return contains;
+}
+</pre>
+
+<p>Final Note - this method could probably have gone into the <code>GameDictionary</code> class, but I was simply too damn lazy to put it there.</p>
+
+<h3>The CalcWordScore Method</h3>
+
+<p>This method calculates the number of points the specified string is worth (in a game of Scrabble). It utilizes a static array of points and can determine the score regardless of the case of the latter</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+public static int CalcWordScore(string text)
+{
+    text = text.ToUpper();
+    int points = 0;
+    foreach(char character in text)
+    {
+        int charInt = Convert.ToInt16(character);
+        points += m_wordPoints[charInt - ((charInt &gt;= 97) ? 97 : 65)];
+    }
+    return points;
+}
+</pre>
+
+<p>Final Note - this method could probably have gone into the <code>AWord</code> class, but I was simply too damn lazy to put it there. Are you starting to see a pattern here?</p>
+
+<h3>The RandomNumber Method</h3>
+
+<p>Since words (and sometimes word sizes) are selected at random, I needed to use the .Net <code>Random</code> class. In order for it to be more likely that a more random number is generated each time, I had to instantiate the <code>Random</code> object whenever I needed to use it. So, I created this method to do the dirty 
+work.</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+public static int RandomNumber(int min, int max)
+{
+    return new Random().Next(min, max);
+}
+</pre>
+
+<p>Again, this method could have gone into the <code>GameDictionary</code> class, but blah, blah, blah....</p>
+
+<h3>The IntToEnum Method</h3>
+
+<p>I came up with this method several years ago to protect my code from exceptions caused by manually edited data and its potential for causing problems. I even wrote a tip about it - <a href="http://www.codeproject.com/Tips/60212/Setting-Enumerators-From-Questionable-Data-Sources">Setting Enumerators From Questionable Data Sources (for C# and VB)</a>[<a href="http://www.codeproject.com/Tips/60212/Setting-Enumerators-From-Questionable-Data-Sources" target="_blank" title="New Window">^</a>].  If you're interest in what it does, you can go read the tip.</p>
+
+<h1>How to Play the Game</h1>
+
+<p>Game play is quite simple. Simply start the app.  The foirst thing you'll see is this message box:</p>
+
+<center><img src="WordCountMessageBox.png" /></center>
+
+<p>If everything is okay, you'll be told to &quot;gird your loins&quot;. If it can't find the dictionary file, you will be informed, and the game will not proceed beyond this point. (The dictionary file has to be in the application folder.)</p>
+
+<p>Assuming your own personal electronic world hasn't fallen into anarchy (the dictionary file was found), click okay, and you'll see this:</p>
+
+<center><img src="FirstStart.png" /></center>
+
+<p>Click the New Game button to start a game. At that point, a randomly selected word will be presented in its scrambled form, and you can immediately start typing in the User Word field.</p> 
+
+<center><img src="GameInProgress.png" /></center>
+
+<p>Just type a word, and press the Return key. If the word is valid, it 
+will be displayed in the list along with the points earned for that word (not counting any bonus points that also may have been earned). As you enter words, the area at the top/right part of the window will show you how many words are possible, how many you've found, and how many points you've earned. Beneath the New Game and Solve buttons, you'll see a few statistics that are also updated as you play.</p>
+
+<p>When you've found all of the words you can, click the Solve button, and the list 
+will be updated to show ALL of the words that were possible. Here's what the form will look like when you hit the solve button. Notice the last word in the list that's followed by two asterisks - this is the original word that was scrambled for the game. Ironically, the word turned out to be <strong><em>COMPILING</em></strong>.</p>
+
+<center><img src="GameSolved.png" /></center>
+
+<p>And here's and example of some words that were found during the game.</p>
+
+<center><img src="GameSolved_02.png" /></center>
+
+<p>Some details:</p>
+<ul>
+    <li>The words you found will be displayed in blue.</li>
+    <li>The words you did NOT find will be displayed in gray.</li>
+    <li>If you found the original word, it will be displayed in red. It is also displayed with two asterisks (whether you found it or not) to indicate that it's the word that was originally scrambled for the current game.</li>
+</ul>
+
+<p>If you're playing a timed game, the timer at the top of the window will count down to zero, and at that point the game is over. Bonus time can be configured in the Setup window, and can be awarded every time the player finds a specified number of words.</p>
+
+<h1>Final Comments</h1>
+
+<p>As I said at the top of this article, this is a simple game. The original version was my first solely owned/designed .Net app, and was written with Windows Forms. This version contains a lot less code, and a simpler model/view model from which to work.</p>
+
+<p>After playing the game a bit, I've decided that it really needs some sort of audible indication that the game has expired. Maybe one day...</p>
+
+<h1>Changes - 18 Oct 2012</h1>
+
+<center><img src="usabilitychange_01.png" /></center>
+
+<p>While playing the game, I was annoyed by some of the things I was encountering. Granted, these are very minor things, but they annoyed me none the less.</p>
+
+<h2>What Word Did I Just Submit?</h2>
+
+<p>Some of the scrambled words allow a large number of words to be found, and when the listbox starts to fill with words, you start to wonder if the word you typed was accepted. The problem is that it takes time for you to scroll the list to find it (and that timer is ticking down while you're looking for the word - tick, tock).</p>
+
+<p>This change had a moderate impact on the view model and the XAML. First, I had to add a property to the <code>DisplayWord</code> class to indicate that the word was the last one found</p>:
+
+<pre lang="cs">//................................................................................
+public bool IsLastWordFound
+{
+    get { return m_isLastWordFound; }
+    set
+    {
+        m_isLastWordFound = value;
+        RaisePropertyChanged(&quot;IsLastWordFound&quot;);
+    }
+}
+</pre>
+
+<p>Next, I added a new property to the <code>GameDictionary</code> class to retain a reference to the last word found. This is just so I don't have to search the list every time a word is submitted to find the word that's marked as the last word found. As you can see, setting the last word found also unsets the last word status on the previously found last word: </p>
+
+<pre lang="cs">//................................................................................
+public DisplayWord LastWordFound 
+{ 
+    get { return m_lastWordFound; }
+    set
+    {
+        if (m_lastWordFound != null)
+        {
+            m_lastWordFound.IsLastWordFound = false;
+        }
+        m_lastWordFound = value;
+        if (m_lastWordFound != null)
+        {
+            m_lastWordFound.IsLastWordFound = true;
+        }
+        // we don't need to be notified that the last word  has changed here.
+    }
+}
+</pre>
+
+<p>Finally, I added the a pair of <code>Path</code> elements to serve as last-word-found indicators in the <code>ListBoxItem</code> style in the XAML.</p>
+
+<pre>&lt;Path Stretch=&quot;Uniform&quot;  Stroke=&quot;DarkGreen&quot; Fill=&quot;DarkGreen&quot; Data=&quot;M 0,0 7.5,7.5 0,15 0,0&quot; Grid.Column=&quot;0&quot; 
+      Visibility=&quot;{Binding Path=IsLastWordFound, Converter={StaticResource BoolToVisibility}}&quot; /&gt;
+&lt;StackPanel Grid.Column=&quot;1&quot; HorizontalAlignment=&quot;Left&quot; Orientation=&quot;Horizontal&quot; Margin=&quot;5,0,0,0&quot;&gt;
+    &lt;TextBlock x:Name=&quot;PART_Word&quot; Text=&quot;{Binding Path=Text}&quot; FontStyle=&quot;Italic&quot; /&gt;
+    &lt;TextBlock x:Name=&quot;PART_Adorner&quot; Text=&quot;**&quot; FontStyle=&quot;Italic&quot; Visibility=&quot;{Binding Path=IsOriginalWord, 
+                Converter={StaticResource BoolToVisibility}}&quot; /&gt;
+&lt;/StackPanel&gt;
+&lt;TextBlock Grid.Column=&quot;2&quot; x:Name=&quot;PART_Points&quot; Text=&quot;{Binding Path=Points}&quot; FontStyle=&quot;Italic&quot; Margin=&quot;0,0,5,0&quot; /&gt;
+&lt;Path Stretch=&quot;Uniform&quot; Stroke=&quot;DarkGreen&quot; Fill=&quot;DarkGreen&quot; Data=&quot;M 15,0 15,15 7.5,7.5 15,0&quot; Grid.Column=&quot;3&quot; 
+      Visibility=&quot;{Binding Path=IsLastWordFound, Converter={StaticResource BoolToVisibility}}&quot; /&gt;
+</pre>
+
+<p>The final part of this feature change is the act of scrolling the last-found-word into view. I simply added the following line to the indicated method:</p>
+
+<pre lang="cs">//--------------------------------------------------------------------------------
+private void buttonSubmit_Click(object sender, RoutedEventArgs e)
+{
+    ...
+    ...
+	this.wordList.ScrollIntoView(CurrentGameDictionary.LastWordFound);
+}
+</pre>
+
+<h2>Game Word Background Color</h2>
+
+<p>I sometimes play without the timer, and this makes the background color of the to similar to the color of the <code>ProgressBar</code> control just above the Game Word. So, I changed the background color of the Game Word control to be <code>LightSteelBlue</code></p>
+
+<h2>Game Word Double-Spacing</h2>
+
+<p>I was having a small problem with determining the letters available to me in a given game, so I decided i wanted to see about changing the kerning of the string. If you were hoping for a definitive way to do this, I'm sorry to disappoint you, but I wimped out and simply wrote a new converter class (see the <code>DoubleSpaceConverter</code> in the source code) that puts a space between the letters.</p>
+
+<h2>New Game Button</h2>
+
+<p>During game play, I was accidentally clicking the New game button when I actually wanted to click the Solve button first. To solve this problem, I added the following line to the indicated method in MainWindow.Xaml.cs:</p>
+
+ <pre lang="cs">//--------------------------------------------------------------------------------
+private void UpdateButtons()
+{
+    this.buttonNewGame.IsEnabled = ((CurrentGameDictionary == null) || (CurrentGameDictionary != null &amp;&amp; !CurrentGameDictionary.IsPlaying));
+    ...
+    ...
+}
+</pre>
+
+<h2>Final Note</h2>
+
+<p>The screen shot provided in this section also illustrates the 1 / NN thing I did a few days ago.</p>
+
+<h1>04 Nov 2012 - Fixes and Features</h1>
+
+<p>Most programmers simply can't leave well enough alone, and that goes for me, too. I play this 
+game alot, and I wanted to see some cumulative statistics. I also wanted to fix the scrollbar 
+issue.</p>
+
+<h2>Fixes</h2>
+
+<ul><li><b>Listbox scrollbar</b> - When I originally posted this article, I was having a problem with the scrollbar in the list 
+box. The problem wasn't noticed until the user had found enough words for the scrollbar to be 
+needed, it would appear as expected, but the scroller thumb wouldn't hange size until you started 
+dragging it.<br /><br />
+    
+It finally bothered me enough that I went looking for a fix. I'd never seen this problem before, 
+so i figured it had something to do with the fact that all of the words in the game dictionary are 
+added to the listbox, and they are collapsed until the user "finds" them. Why this confuses the 
+ScrollViewer in the list is anybody's guess. In any case, the fix was to add the following property 
+to the XAML that describes the listbox:<br /><br />
+
+<pre lang="xml">ScrollViewer.CanContentScroll="False"</pre>
+
+Once I did that, the scrollviewer stopped acting like a drunken sailor.<br /><br />
+</li>
+
+    <li><b>User Word Focus</b> - If you did something else on your system that cause the app's 
+        window to lose focus, the caret would not be correctly displayed sometimes in the User 
+        Word text box.<br /><br /></li>
+</ul>
+
+<h2>New Statistics Feature</h2>
+
+<p>Since I play the game a lot, I wanteda  way to save cumulative statistics so I can see how poorly 
+I do in the game over time. Since there were quite a few metrics to retain, I decided to change the 
+Statistics display to a TabControl.  The Current game tab shows the smae stats we had before, and 
+the Cumulative tab shows the - well - the cumulative stats. Here are some screen shots to give you an 
+idea.</p>
+
+<center><img src="nov04_01.png" /></center><br /><br />
+<center><img src="nov04_02.png" /></center><br />
+
+<p>Lastly, some changes were made to program flow and functionality to accomodate the new statistics.</p>
+    
+<ul>
+    <li>When you start a new game, the tab control automatically switches the <b><i>Current Game</i></b> page.<br /><br /></li>
+    <li>EWhen you win or solve a running game, or if time expires on a running game, the tab control automatically select sthe <b><i>Cumulative</i></b> page.<br /><br /></li>
+    <li>Cumulative statistics can be reset either from the <b><i>Cumulative</i></b> tab, or from the <b><i>Setup</i></b> window.<br /><br /></li>
+    <li>Cumulative statistics are tuned on by default, but can be toggled on/off in the <b><i>Setup</i></b> window.<br /><br /></li>
+</ul>
+
+<p>The other major change was the includion of .Net class names into the dictionary. I wrote a 
+WinForms app that references all of the .Net 4.5 assemblies, and extracts all of class names 
+from them. Then, it removes non-numeric characters frm these discovered class names, and creates 
+a text file that contains any class name that is 3-10 characters long. The file is created in 
+the appropriate folder, and is loaded by default by the Anangrams2 application. There are a few 
+hundred class names that are already convered by the standard scrabble dictionary, so the class 
+name version of the word is not included in the resulting overall dictinary. The act of loading 
+this additional file increases the initialization time for the Anagrams2 app by a few seconds 
+because of the filtering being done. If you're not interested in loading the extra file, simply 
+delete it.  In the <b><i>Setup</i></b> window, you can elect to include class names in your 
+games.</p>
+
+<p>The interesting bit of the code involved in discovering the class names is as follows:</p>
+
+<pre lang="cs">
+//--------------------------------------------------------------------------------
+private void BuildWordListFromClassNames()
+{
+    Assembly[] assemblies = null;
+    try
+    {
+        // I tried to do this in a single Linq statement, but the first from was 
+        // throwing exceptions about not being able to access some of the 
+        // assemblies, so I broke it out into separate statements
+        assemblies = (from assembly in AppDomain.CurrentDomain.GetAssemblies().AsParallel() 
+        select assembly).ToArray&lt;Assembly&gt;();
+    }
+    catch (Exception)
+    {
+        // we don't care about exceptions (we take what reflect deigns to give us) 
+    }
+    try
+    {
+        if (assemblies != null)
+        {
+            foreach (Assembly assembly in assemblies)
+            {
+                var types = (from type in assembly.GetTypes().AsParallel()
+                where CheckWordlength(MassageName(type.Name.ToUpper()).Length)
+                select MassageName(type.Name.ToUpper())).ToArray&lt;string&gt;();
+
+                if (types.Length &gt; 0)
+                {
+                    foreach(string word in types)
+                    {
+                        if (!classnames.Contains(word))
+                        {
+                            classnames.Add(word);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show(ex.Message, "Oops!");
+    }
+    classnames.Sort();
+    this.label2.Text = classnames.Count.ToString();
+    this.listBox1.Items.AddRange(classnames.ToArray());
+}
+</pre>
+
+<h1>History</h1>
+
+<ul>
+    <li><strong>14 Oct 2012</strong> - Original version</li>
+
+    <li><strong>15 Oct 2012</strong> - While writing the article, I commented out the <code>GroupBox</code> style used to eliminate the non-transparent border borders so I could get a screenshot of it. I was playing the game this morning when I noticed that it was still commented out.  I uncommented the xaml, recompiled, and uploaded the source again.</li>
+
+    <li><strong>15 Oct 2012</strong> - Change #2 - I added the number of possible words for each letter count in the Game Statistics group box. This required a change to a couple the <code>GameStatistics</code>, <code>WordCounts</code>, and <code>WordCountItem</code> constructors, as well as the converter that processes the data. the result is that the info is shown like this - <code>3-letter words: 0 / NN</code>, where NN is the possible number of 3-letter words. I also changed the ListBox font to Consolas. The ZIP file has been re-uploaded - again.</li>
+
+    <li><strong>15 Oct 2012</strong> - <strong><em>IMPORTANT NOTICE!</em></strong> *I THINK* you have to install .Net 4.5 before running this application, or change the set method on the <code>GameDictionary.PercentRemaining</code> property to <code>public</code> by removing the <code>private</code> accessor).
+</li>
+
+    <li><strong>18 Oct 2012</strong> - Added some usability changes (detailed above).
+
+    <li><strong>04 Nov 2012</strong> - Change Statistics section of window and fixed a scrollbar issue (detailed above).
+</li>
+
+</ul>
+</body>
+</html>
